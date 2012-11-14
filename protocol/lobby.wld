@@ -5,6 +5,7 @@ Endpoint Lobby;
 
 Sequences {
     BeginSession: Client.start_session -> Lobby.add_user;
+    ChangeUsername: Client.set_username -> Lobby.handle_change_username;
 }
 
 Shared {
@@ -12,7 +13,7 @@ Shared {
 }
 
 // Starts a session with the server and invokes a callback upon completion
-Sequence BeginSession(Text name) {
+Sequence BeginSession(Text name, Function (returns: Nothing) on_began_session) {
     Client.start_session {
         username = name;
     }
@@ -37,21 +38,38 @@ Sequence BeginSession(Text name) {
     }
 }
 
-Client {
-    Function (returns: Nothing) on_began_session;
+// Request that your username be changed, e.g. if your original
+// username was taken already
+Sequence ChangeUsername(Text name, Function (in: TrueFalse; returns: Nothing) on_change_username_response) {
+    TrueFalse changed = False;
 
-    onCreate(Function (returns: Nothing) on_began_session_) {
-        on_began_session = on_began_session_;
+    Client.set_username {
     }
+    Lobby.handle_change_username {
+        if (not name in users) {
+            changed = True;
+            removeUser(username);
+            username = name;
+            users.append(username);
+        }
+    }
+    Client.onComplete {
+        on_change_username_response(changed);
+    }
+}
 
-
+Client {
     Public Function get_username() returns Text {
         return username;
     }
 
 
-    Public Function begin_session(Text name) {
-        start_session(name);
+    Public Function begin_session(Text name, Function (returns: Nothing) on_began_session) {
+        start_session(name, on_began_session);
+    }
+
+    Public Function change_username(Text name, Function (in: TrueFalse; returns: Nothing) on_change_username_response) {
+        set_username(name, on_change_username_response);
     }
 }
 
@@ -61,4 +79,15 @@ Lobby {
     onCreate(External List(element: Text) users_) {
         extAssign users_ to users;
     }
+
+
+    Private Function removeUser(Text name) returns Nothing {
+        Number idx = 0;
+        for(Text user in users) {
+            if (user == name)
+                users.remove(idx);
+            idx += 1;
+        }
+    }
+
 }
