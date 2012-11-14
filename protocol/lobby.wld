@@ -1,0 +1,64 @@
+Lobby
+
+Endpoint Client;
+Endpoint Lobby;
+
+Sequences {
+    BeginSession: Client.start_session -> Lobby.add_user;
+}
+
+Shared {
+    Nothing controls Text username;
+}
+
+// Starts a session with the server and invokes a callback upon completion
+Sequence BeginSession(Text name) {
+    Client.start_session {
+        username = name;
+    }
+    Lobby.add_user {
+        // If the username is already provided, add some random
+        // numbers until we get one that isn't. The client will then
+        // pick this up when the session initiation complete. They can
+        // try changing their name again later if they like.
+        // NOTE: Can't currently use rand() because we don't have access
+        // to it, just add fixed to the end
+        Text digits = '1234567890';
+        Number n = 0;
+        while (username in users) {
+            n += 1;
+            if (n > len(digits)) n = 0;
+            username += 'a'; // FIXME Text[] broken
+        }
+        users.append(username);
+    }
+    Client.onComplete {
+        on_began_session();
+    }
+}
+
+Client {
+    Function (returns: Nothing) on_began_session;
+
+    onCreate(Function (returns: Nothing) on_began_session_) {
+        on_began_session = on_began_session_;
+    }
+
+
+    Public Function get_username() returns Text {
+        return username;
+    }
+
+
+    Public Function begin_session(Text name) {
+        start_session(name);
+    }
+}
+
+Lobby {
+    External List(element: Text) users;
+
+    onCreate(External List(element: Text) users_) {
+        extAssign users_ to users;
+    }
+}

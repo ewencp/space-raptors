@@ -1,0 +1,4 @@
+-r waldo/requirements.txt
+
+pygame
+pgu
