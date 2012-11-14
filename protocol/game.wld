@@ -1,0 +1,16 @@
+Game
+
+Endpoint Player;
+Endpoint Server;
+
+Sequences {
+}
+
+Shared {
+}
+
+Player {
+}
+
+Server {
+}
