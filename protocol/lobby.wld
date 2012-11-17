@@ -102,8 +102,10 @@ Sequence PushOpenGames() {
 
     Lobby.push_updated_game_list {
         Number count = len(open_games);
-        for (Number idx in range(0,count))
-            games_out.append(open_games[idx]);
+        for (Number idx in range(0,count)) {
+            if (open_games[idx] != username)
+                games_out.append(open_games[idx]);
+        }
     }
     Client.garbage {
     }
