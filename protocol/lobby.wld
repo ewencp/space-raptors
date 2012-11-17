@@ -6,6 +6,11 @@ Endpoint Lobby;
 Sequences {
     BeginSession: Client.start_session -> Lobby.add_user;
     ChangeUsername: Client.set_username -> Lobby.handle_change_username;
+
+    CreateGame: Client.create_game -> Lobby.create_game;
+    PushOpenGames: Lobby.push_updated_game_list -> Client.garbage;
+    JoinGame: Client.join_user_game -> Lobby.join_game;
+    PushGameJoined : Lobby.notify_game_joined -> Client.more_garbage;
 }
 
 Shared {
@@ -29,13 +34,20 @@ Sequence BeginSession(Text name, Function (returns: Nothing) on_began_session) {
         while (username in users) {
             n += 1;
             if (n > len(digits)) n = 0;
-            username += 'a'; // FIXME Text[] broken
+            username += 'a';
         }
-        users.append(username);
+        addUser(username);
+    }
+
+    Lobby.onComplete {
+        // Trigger an update for this client's list of games since
+        // they'll be searching for some
+        push_game_list();
     }
     Client.onComplete {
         on_began_session();
     }
+
 }
 
 // Request that your username be changed, e.g. if your original
@@ -50,15 +62,113 @@ Sequence ChangeUsername(Text name, Function (in: TrueFalse; returns: Nothing) on
             changed = True;
             removeUser(username);
             username = name;
-            users.append(username);
+            addUser(username);
         }
     }
     Client.onComplete {
         on_change_username_response(changed);
     }
+    Lobby.onComplete {
+        // Trigger updates because their username changed
+    }
 }
 
+
+// Create a record of a game to be advertised so others can join it
+Sequence CreateGame() {
+    TrueFalse added = False;
+
+    Client.create_game {
+    }
+    Lobby.create_game {
+        // Trivial, just add to list.
+        TrueFalse has_game;
+        has_game = hasGame(username);
+        if (not has_game) {
+            addGame(username);
+            added = True;
+        }
+    }
+    Lobby.onComplete {
+        // Notify lobby python code about creation so it can trigger
+        // updates for anyone who needs their list of games updated to
+        // reflect this new on
+        on_open_game_added();
+    }
+}
+
+Sequence PushOpenGames() {
+    List(element: Text) games_out;
+
+    Lobby.push_updated_game_list {
+        Number count = len(open_games);
+        for (Number idx in range(0,count))
+            games_out.append(open_games[idx]);
+    }
+    Client.garbage {
+    }
+    Client.onComplete {
+        on_updated_open_game_list(games_out);
+    }
+}
+
+Sequence JoinGame(Text owner, Function(in: TrueFalse; returns: Nothing) cb) {
+    // We need to track success because this depends on external
+    // state.
+    TrueFalse succeeded = False;
+
+    Client.join_user_game {
+    }
+    Lobby.join_game {
+        // Only proceed if the user is still listed as having the game
+        // open. They may have disconnected, joined a different game,
+        // cleared the advertisement, etc.
+        // FIXME split because assigning in declaration is broken
+        TrueFalse has_game;
+        has_game = hasGame(owner);
+        if (has_game) {
+            matchGame(owner, username);
+            succeeded = True;
+        }
+    }
+
+    Lobby.onComplete {
+        if (succeeded) {
+            // Notify host code of event. Actually triggering the
+            // start of the game requires working with both.
+            on_matched_game(owner, username);
+        }
+    }
+    Client.onComplete {
+        cb(succeeded);
+    }
+}
+
+Sequence PushGameJoined(Text guest) {
+    Lobby.notify_game_joined {
+    }
+    Client.more_garbage {
+    }
+    Client.onComplete {
+        on_matched_game(guest);
+    }
+}
+
+
 Client {
+    Function (in: List(element: Text); returns: Nothing) on_updated_open_game_list;
+    Function(in: Text; returns: Nothing) on_matched_game;
+
+    onCreate(
+        Function(in: List(element: Text); returns: Nothing) on_updated_open_game_list_,
+        Function(in: Text; returns: Nothing) on_matched_game_)
+    {
+        on_updated_open_game_list = on_updated_open_game_list_;
+        on_matched_game = on_matched_game_;
+    }
+
+
+
     Public Function get_username() returns Text {
         return username;
     }
@@ -71,23 +181,120 @@ Client {
     Public Function change_username(Text name, Function (in: TrueFalse; returns: Nothing) on_change_username_response) {
         set_username(name, on_change_username_response);
     }
+
+    Public Function create_new_game() {
+        create_game();
+    }
+
+    Public Function join_game(Text owner, Function(in: TrueFalse; returns: Nothing) cb) {
+        join_user_game(owner, cb);
+    }
+
 }
 
 Lobby {
+    // List of active users by name
     External List(element: Text) users;
+    // Users looking for a game, i.e. they won't appear in active
+    // games. We want to push updates to them about changes to the
+    // list of games they might care about
+    External List(element: Text) matching_users;
+    // List of open games, just a single username for each
+    External List(element: Text) open_games;
+    // List of active games, pair of user names
+    External List(element: List(element: Text)) active_games;
 
-    onCreate(External List(element: Text) users_) {
+    Function(returns: Nothing) on_open_game_added;
+    Function(in: Text, Text; returns: Nothing) on_matched_game;
+
+    onCreate(External List(element: Text) users_,
+        External List(element: Text) matching_users_,
+        External List(element: Text) open_games_,
+        External List(element: List(element: Text)) active_games_,
+        Function(returns: Nothing) on_open_game_added_,
+        Function(in: Text, Text; returns: Nothing) on_matched_game_)
+    {
         extAssign users_ to users;
+        extAssign matching_users_ to matching_users;
+        extAssign open_games_ to open_games;
+        extAssign active_games_ to active_games;
+        on_open_game_added = on_open_game_added_;
+        on_matched_game = on_matched_game_;
     }
 
 
-    Private Function removeUser(Text name) returns Nothing {
-        Number idx = 0;
-        for(Text user in users) {
-            if (user == name)
-                users.remove(idx);
-            idx += 1;
+    Public Function push_game_list() returns Nothing {
+        // Only push the updated list if the user is still looking for
+        // a match
+        TrueFalse user_matching;
+        user_matching = isInTextList(username, matching_users);
+        if (user_matching) {
+            push_updated_game_list();
         }
+    }
+
+    // Notify an owner that was advertising a game that another user
+    // accepted the offer and joined their game. They are now matched.
+    Public Function notify_owner_of_guest(Text owner, Text guest) returns Nothing {
+        if (owner == username) {
+            notify_game_joined(guest);
+        }
+    }
+
+
+
+
+    Private Function isInTextList(Text name, External List(element: Text) list) returns TrueFalse {
+        for(Number idx in range(0,len(list))) {
+            if (list[idx] == name)
+                return True;
+        }
+        return False;
+    }
+    Private Function removeFromTextList(Text name, External List(element: Text) list) returns Nothing {
+        for(Number idx in range(0,len(list))) {
+            if (list[idx] == name) {
+                list.remove(idx);
+                break;
+            }
+        }
+    }
+
+    Private Function addUser(Text name) returns Nothing {
+        users.append(name);
+        matching_users.append(name);
+    }
+    Private Function removeUser(Text name) returns Nothing {
+        removeFromTextList(name, users);
+        // Also remove from matching users
+        removeFromTextList(name, matching_users);
+    }
+
+    Private Function hasGame(Text name) returns TrueFalse {
+        TrueFalse result;
+        result = isInTextList(name, open_games);
+        return result;
+    }
+    // Create a new advertisement (open game)
+    Private Function addGame(Text name) returns Nothing {
+        open_games.append(name);
+    }
+    Private Function removeGame(Text name) returns Nothing {
+        removeFromTextList(name, open_games);
+    }
+
+    // Match users into a game and move it into the active list
+    Private Function matchGame(Text owner, Text guest) returns Nothing {
+        // If the guest had been advertising as well, remove their
+        // advertisement
+        removeGame(guest);
+        // Remove the owner's advertisement
+        removeGame(owner);
+        // Mark both as no longer searching
+        removeFromTextList(owner, matching_users);
+        removeFromTextList(guest, matching_users);
+        // And create new active game
+        active_games.append([owner, guest]);
     }
 
 }
