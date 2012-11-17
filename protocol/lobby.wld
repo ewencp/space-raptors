@@ -32,9 +32,9 @@ Sequence BeginSession(Text name, Function (returns: Nothing) on_began_session) {
         Text digits = '1234567890';
         Number n = 0;
         while (username in users) {
+            username += digits[n];
             n += 1;
             if (n > len(digits)) n = 0;
-            username += 'a';
         }
         addUser(username);
     }
